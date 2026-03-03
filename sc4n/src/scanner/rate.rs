@@ -40,11 +40,15 @@ impl RateLimiter {
         if inner.tokens < 1.0 {
             let wait_secs = (1.0 - inner.tokens) / inner.rate;
             let wait = Duration::from_secs_f64(wait_secs);
-            drop(inner);  // release lock before sleeping
+            drop(inner);
             tokio::time::sleep(wait).await;
-            // re-acquire and consume token
+
             let mut inner = self.inner.lock().await;
-            inner.tokens = 0.0;
+            let now = Instant::now();
+            let elapsed = now.duration_since(inner.last_refill).as_secs_f64();
+            inner.tokens = (inner.tokens + elapsed * inner.rate).min(inner.rate);
+            inner.last_refill = now;
+            inner.tokens -= 1.0_f64.min(inner.tokens);
         } else {
             inner.tokens -= 1.0;
         }
