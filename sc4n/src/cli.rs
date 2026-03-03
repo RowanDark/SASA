@@ -40,9 +40,9 @@ pub struct Cli {
     #[arg(short = 'd', long, default_value = "false")]
     pub debug: bool,
 
-    /// Randomize port scan order
-    #[arg(long, default_value = "true")]
-    pub randomize: bool,
+    /// Disable port scan order randomization
+    #[arg(long, default_value = "false")]
+    pub no_randomize: bool,
 
     /// Suppress banner output, print results only
     #[arg(short = 'q', long, default_value = "false")]

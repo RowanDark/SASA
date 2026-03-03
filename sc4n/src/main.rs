@@ -99,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
         cli.concurrency,
         cli.rate,
         cli.timeout_ms,
-        cli.randomize,
+        !cli.no_randomize,
     );
 
     if !cli.quiet {
@@ -117,7 +117,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let writer = ResultWriter::new(&cli.output);
+    let writer = ResultWriter::new(&cli.output)?;
     let scanner = Scanner::new(profile);
 
     let (tx, mut rx) = mpsc::channel::<scanner::ScanResult>(1000);
