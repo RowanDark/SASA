@@ -1,11 +1,10 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
-use tokio::sync::Semaphore;
-use std::sync::Arc;
 use rand::seq::SliceRandom;
 use rand::Rng;
+use futures::stream::{FuturesUnordered, StreamExt};
 
 use crate::profiles::ScanProfile;
 use crate::scanner::rate::RateLimiter;
@@ -39,14 +38,12 @@ impl std::fmt::Display for PortStatus {
 pub struct TcpScanner {
     profile: ScanProfile,
     limiter: RateLimiter,
-    semaphore: Arc<Semaphore>,
 }
 
 impl TcpScanner {
     pub fn new(profile: ScanProfile) -> Self {
         let limiter = RateLimiter::new(profile.rate_per_sec);
-        let semaphore = Arc::new(Semaphore::new(profile.concurrency));
-        Self { profile, limiter, semaphore }
+        Self { profile, limiter }
     }
 
     pub async fn scan_ports(
@@ -56,97 +53,93 @@ impl TcpScanner {
         debug: bool,
         tx: tokio::sync::mpsc::Sender<ScanResult>,
     ) -> anyhow::Result<()> {
+        // Resolve hostname once before spawning any tasks (Perf #1)
+        let target_ip: IpAddr = if let Ok(ip) = host.parse::<IpAddr>() {
+            ip
+        } else {
+            // Pass an owned String so the future has no borrow lifetime on a local.
+            tokio::net::lookup_host(format!("{}:0", host))
+                .await?
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("Could not resolve host: {}", host))?
+                .ip()
+        };
+
         if self.profile.randomize_order {
             let mut rng = rand::thread_rng();
             ports.shuffle(&mut rng);
         }
 
-        let mut handles = Vec::new();
-        let mut burst_count = 0;
+        // Gate spawn count to concurrency limit via FuturesUnordered (Perf #2)
+        let max_in_flight = self.profile.concurrency;
+        let mut futs: FuturesUnordered<_> = FuturesUnordered::new();
+        let mut burst_count = 0usize;
 
         for port in ports {
             // Burst pause logic
             burst_count += 1;
             if self.profile.burst_size > 0
-                && burst_count % self.profile.burst_size == 0
+                && burst_count.is_multiple_of(self.profile.burst_size)
                 && self.profile.burst_pause_ms > 0
             {
                 tokio::time::sleep(Duration::from_millis(
-                    self.profile.burst_pause_ms
-                )).await;
+                    self.profile.burst_pause_ms,
+                ))
+                .await;
             }
 
-            let host = host.to_string();
+            // Gate spawning to concurrency limit
+            while futs.len() >= max_in_flight {
+                futs.next().await;
+            }
+
             let limiter = self.limiter.clone();
-            let semaphore = self.semaphore.clone();
             let tx = tx.clone();
+            let host_str = host.to_string();
             let timeout_ms = self.profile.timeout_ms;
             let min_jitter = self.profile.min_jitter_ms;
             let max_jitter = self.profile.max_jitter_ms;
-            let debug = debug;
 
-            let handle = tokio::spawn(async move {
-                // Acquire rate limiter
+            futs.push(tokio::spawn(async move {
                 limiter.acquire().await;
 
-                // Apply jitter
                 if max_jitter > 0 {
-                    let jitter = rand::thread_rng()
-                        .gen_range(min_jitter..=max_jitter);
+                    let jitter = rand::thread_rng().gen_range(min_jitter..=max_jitter);
                     if jitter > 0 {
-                        tokio::time::sleep(
-                            Duration::from_millis(jitter)
-                        ).await;
+                        tokio::time::sleep(Duration::from_millis(jitter)).await;
                     }
                 }
 
-                let _permit = semaphore.acquire().await.unwrap();
-
-                let addr = format!("{}:{}", host, port);
-                let socket_addr: SocketAddr = match addr.parse() {
-                    Ok(a) => a,
-                    Err(_) => {
-                        // Try resolving hostname
-                        match tokio::net::lookup_host(&addr).await {
-                            Ok(mut addrs) => match addrs.next() {
-                                Some(a) => a,
-                                None => return,
-                            },
-                            Err(_) => return,
-                        }
-                    }
-                };
-
+                let socket_addr = SocketAddr::new(target_ip, port);
                 let start = std::time::Instant::now();
                 let result = timeout(
                     Duration::from_millis(timeout_ms),
                     TcpStream::connect(socket_addr),
-                ).await;
-
+                )
+                .await;
                 let latency_ms = start.elapsed().as_millis() as u64;
 
                 let status = match result {
                     Ok(Ok(_)) => PortStatus::Open,
                     Ok(Err(_)) => PortStatus::Closed,
-                    Err(_) => PortStatus::Filtered,  // timeout
+                    Err(_) => PortStatus::Filtered,
                 };
 
-                // Only send result if open, or debug mode
                 if status == PortStatus::Open || debug {
-                    let _ = tx.send(ScanResult {
-                        host: host.clone(),
-                        port,
-                        status,
-                        latency_ms,
-                    }).await;
+                    let _ = tx
+                        .send(ScanResult {
+                            host: host_str,
+                            port,
+                            status,
+                            latency_ms,
+                        })
+                        .await;
                 }
-            });
-
-            handles.push(handle);
+            }));
         }
 
-        // Await all probes
-        futures::future::join_all(handles).await;
+        // Drain remainder
+        while futs.next().await.is_some() {}
         Ok(())
     }
 }
