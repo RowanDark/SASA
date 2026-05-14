@@ -4,7 +4,7 @@ pub mod tcp;
 use crate::profiles::ScanProfile;
 use tcp::TcpScanner;
 
-pub use tcp::{ScanResult, PortStatus};
+pub use tcp::{ScanResult, PortStatus, resolve_host};
 
 pub struct Scanner {
     pub profile: ScanProfile,
