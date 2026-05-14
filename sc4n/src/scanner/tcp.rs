@@ -3,6 +3,7 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio::sync::Semaphore;
+use tokio::io::AsyncReadExt;
 use std::sync::Arc;
 use rand::seq::SliceRandom;
 use rand::Rng;
@@ -10,12 +11,39 @@ use rand::Rng;
 use crate::profiles::ScanProfile;
 use crate::scanner::rate::RateLimiter;
 
+pub async fn resolve_host(host: &str) -> anyhow::Result<String> {
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return Ok(host.to_string());
+    }
+    let mut addrs = tokio::net::lookup_host(format!("{}:0", host)).await?;
+    let addr = addrs.next().ok_or_else(|| anyhow::anyhow!("No addresses found for {}", host))?;
+    Ok(addr.ip().to_string())
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ScanResult {
     pub host: String,
     pub port: u16,
     pub status: PortStatus,
     pub latency_ms: u64,
+    pub banner: Option<String>,
+}
+
+async fn grab_banner(mut stream: TcpStream) -> Option<String> {
+    let mut buf = vec![0u8; 256];
+    let n = match timeout(Duration::from_millis(500), stream.read(&mut buf)).await {
+        Ok(Ok(n)) => n,
+        _ => return None,
+    };
+    if n == 0 {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&buf[..n]);
+    let cleaned: String = raw.chars().filter(|&c| {
+        (c as u32 >= 0x20 && c as u32 <= 0x7E) || c == '\t' || c == '\n' || c == '\r'
+    }).collect();
+    let trimmed = cleaned.trim().to_string();
+    if trimmed.is_empty() { None } else { Some(trimmed) }
 }
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq)]
@@ -105,16 +133,7 @@ impl TcpScanner {
                 let addr = format!("{}:{}", host, port);
                 let socket_addr: SocketAddr = match addr.parse() {
                     Ok(a) => a,
-                    Err(_) => {
-                        // Try resolving hostname
-                        match tokio::net::lookup_host(&addr).await {
-                            Ok(mut addrs) => match addrs.next() {
-                                Some(a) => a,
-                                None => return,
-                            },
-                            Err(_) => return,
-                        }
-                    }
+                    Err(_) => return,
                 };
 
                 let start = std::time::Instant::now();
@@ -125,10 +144,13 @@ impl TcpScanner {
 
                 let latency_ms = start.elapsed().as_millis() as u64;
 
-                let status = match result {
-                    Ok(Ok(_)) => PortStatus::Open,
-                    Ok(Err(_)) => PortStatus::Closed,
-                    Err(_) => PortStatus::Filtered,  // timeout
+                let (status, banner) = match result {
+                    Ok(Ok(stream)) => {
+                        let b = grab_banner(stream).await;
+                        (PortStatus::Open, b)
+                    },
+                    Ok(Err(_)) => (PortStatus::Closed, None),
+                    Err(_) => (PortStatus::Filtered, None),
                 };
 
                 // Only send result if open, or debug mode
@@ -138,6 +160,7 @@ impl TcpScanner {
                         port,
                         status,
                         latency_ms,
+                        banner,
                     }).await;
                 }
             });

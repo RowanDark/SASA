@@ -8,15 +8,16 @@ use cli::{Cli, ProfileArg};
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use output::ResultWriter;
-use scanner::{Scanner, PortStatus};
+use scanner::{Scanner, PortStatus, resolve_host};
 use tokio::sync::mpsc;
 
 fn print_banner() {
     println!("{}", r#"
-  ___  ___ _  _ _ __
- / __|/ __| || | '_ \
- \__ \ (__| || | | | |
- |___/\___|\_,_|_| |_|
+  ____    _    ____    _
+ / ___|  / \  / ___|  / \
+ \___ \ / _ \ \___ \ / _ \
+  ___) / ___ \ ___) / ___ \
+ |____/_/   \_\____/_/   \_\
 "#.bright_red().bold());
     println!("{}", "  Stealthy Adaptive Network Scanner".dimmed());
     println!("{}", "  © 2025 RowanDark\n".dimmed());
@@ -57,6 +58,71 @@ fn get_profile(arg: &ProfileArg) -> profiles::ScanProfile {
     }
 }
 
+fn service_name(port: u16) -> &'static str {
+    match port {
+        20 => "ftp-data", 21 => "ftp", 22 => "ssh", 23 => "telnet",
+        25 => "smtp", 53 => "dns", 67 | 68 => "dhcp", 69 => "tftp",
+        80 => "http", 110 => "pop3", 111 => "rpcbind", 119 => "nntp",
+        123 => "ntp", 135 => "msrpc", 137 | 138 | 139 => "netbios",
+        143 => "imap", 161 | 162 => "snmp", 389 => "ldap",
+        443 => "https", 445 => "smb", 465 => "smtps", 514 => "syslog",
+        515 => "lpd", 587 => "submission", 631 => "ipp", 636 => "ldaps",
+        993 => "imaps", 995 => "pop3s", 1080 => "socks", 1194 => "openvpn",
+        1433 => "mssql", 1521 => "oracle", 2049 => "nfs",
+        2375 | 2376 => "docker", 3306 => "mysql", 3389 => "rdp",
+        4444 => "metasploit", 4848 => "glassfish", 5432 => "postgres",
+        5900 => "vnc", 5985 | 5986 => "winrm", 6379 => "redis",
+        6443 => "k8s-api", 7077 => "spark", 8080 => "http-alt",
+        8443 => "https-alt", 8888 => "jupyter", 9000 => "php-fpm",
+        9090 => "prometheus", 9200 | 9300 => "elasticsearch",
+        27017 | 27018 => "mongodb", 50070 => "hadoop",
+        _ => "",
+    }
+}
+
+fn render_summary_table(results: &[scanner::ScanResult]) {
+    if results.is_empty() {
+        return;
+    }
+
+    const PORT_W: usize = 7;
+    const SVC_W: usize = 13;
+    const LAT_W: usize = 10;
+    const BAN_W: usize = 42;
+
+    let top    = format!("┌{:─<PORT_W$}┬{:─<SVC_W$}┬{:─<LAT_W$}┬{:─<BAN_W$}┐", "", "", "", "");
+    let mid    = format!("├{:─<PORT_W$}┼{:─<SVC_W$}┼{:─<LAT_W$}┼{:─<BAN_W$}┤", "", "", "", "");
+    let bottom = format!("└{:─<PORT_W$}┴{:─<SVC_W$}┴{:─<LAT_W$}┴{:─<BAN_W$}┘", "", "", "", "");
+
+    println!("\n{}", top.bright_cyan());
+    println!("{}",
+        format!("│{:>PORT_W$}│{:<SVC_W$}│{:<LAT_W$}│{:<BAN_W$}│",
+            " PORT ", " SERVICE     ", " LATENCY  ", " BANNER                                   ")
+        .bright_cyan().bold()
+    );
+    println!("{}", mid.bright_cyan());
+
+    for r in results {
+        let svc = service_name(r.port);
+        let lat = format!("{}ms", r.latency_ms);
+        let banner_raw = r.banner.as_deref().unwrap_or("");
+        let banner = if banner_raw.chars().count() > 40 {
+            let truncated: String = banner_raw.chars().take(39).collect();
+            format!("{}…", truncated)
+        } else {
+            banner_raw.to_string()
+        };
+        println!("│{:>PORT_W$}│{:<SVC_W$}│{:<LAT_W$}│{:<BAN_W$}│",
+            format!("{:>5} ", r.port),
+            format!(" {:<12}", svc),
+            format!(" {:<9}", lat),
+            format!(" {:<41}", banner),
+        );
+    }
+
+    println!("{}", bottom.bright_cyan());
+}
+
 fn print_result(result: &scanner::ScanResult) {
     match result.status {
         PortStatus::Open => println!(
@@ -95,6 +161,8 @@ async fn main() -> anyhow::Result<()> {
     let ports = parse_ports(&cli.ports)?;
     let total_ports = ports.len();
 
+    let resolved_ip = resolve_host(&cli.host).await?;
+
     let profile = get_profile(&cli.profile).with_overrides(
         cli.concurrency,
         cli.rate,
@@ -103,8 +171,13 @@ async fn main() -> anyhow::Result<()> {
     );
 
     if !cli.quiet {
+        let target_display = if resolved_ip != cli.host {
+            format!("{} ({})", cli.host, resolved_ip)
+        } else {
+            cli.host.clone()
+        };
         println!("{} {} {} {}",
-            "Target:".dimmed(), cli.host.white().bold(),
+            "Target:".dimmed(), target_display.white().bold(),
             "│ Profile:".dimmed(), profile.name.bright_cyan()
         );
         println!("{} {} {} {}",
@@ -133,7 +206,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn scanner task
     let tcp = scanner.tcp();
-    let host = cli.host.clone();
+    let host = resolved_ip.clone();
     let debug = cli.debug;
     let scan_handle = tokio::spawn(async move {
         tcp.scan_ports(&host, ports, debug, tx).await
@@ -141,6 +214,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Collect results
     let mut open_count = 0u32;
+    let mut open_results: Vec<scanner::ScanResult> = Vec::new();
     let quiet = cli.quiet;
 
     while let Some(result) = rx.recv().await {
@@ -148,6 +222,7 @@ async fn main() -> anyhow::Result<()> {
         if result.status == PortStatus::Open {
             open_count += 1;
             pb.set_message(format!("{} open", open_count));
+            open_results.push(result.clone());
         }
         if !quiet || result.status == PortStatus::Open {
             pb.suspend(|| print_result(&result));
@@ -163,6 +238,9 @@ async fn main() -> anyhow::Result<()> {
     pb.finish_with_message(format!("Done. {} open ports found.", open_count));
 
     if !cli.quiet {
+        open_results.sort_by_key(|r| r.port);
+        render_summary_table(&open_results);
+
         println!("\n{} {} open port(s) found on {}",
             "✓".green().bold(),
             open_count.to_string().bright_green().bold(),
