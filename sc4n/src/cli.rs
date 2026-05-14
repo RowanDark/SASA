@@ -2,7 +2,7 @@ use clap::{Parser, ValueEnum};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "sc4n",
+    name = "SASA",
     about = "Stealthy adaptive network scanner",
     version = "0.1.0",
     author = "RowanDark"
@@ -29,7 +29,7 @@ pub struct Cli {
     pub rate: Option<u64>,
 
     /// Output file path
-    #[arg(short = 'o', long, default_value = "sc4n_results.jsonl")]
+    #[arg(short = 'o', long, default_value = "SASA_results.jsonl")]
     pub output: String,
 
     /// Timeout per probe in milliseconds (overrides profile)
