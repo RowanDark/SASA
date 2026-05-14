@@ -1,4 +1,4 @@
-# sc4n
+# SASA
 
 Stealthy adaptive network port scanner built in Rust. Designed for penetration testers and bug bounty hunters.
 
@@ -9,66 +9,66 @@ Stealthy adaptive network port scanner built in Rust. Designed for penetration t
 ```bash
 # Clone the repository
 git clone <repo-url>
-cd sc4n
+cd SASA
 
 # Build optimized release binary
 cargo build --release
 
-# Binary will be at target/release/sc4n
+# Binary will be at target/release/SASA
 ```
 
 ## Usage
 
 ```bash
 # Basic scan with default balanced profile (ports 1-1024)
-./target/release/sc4n -H 192.168.1.1
+./target/release/SASA -H 192.168.1.1
 
 # Scan specific ports
-./target/release/sc4n -H 192.168.1.1 -p 22,80,443,8080
+./target/release/SASA -H 192.168.1.1 -p 22,80,443,8080
 
 # Scan a port range
-./target/release/sc4n -H 192.168.1.1 -p 1-65535
+./target/release/SASA -H 192.168.1.1 -p 1-65535
 
 # Mixed port specification
-./target/release/sc4n -H 192.168.1.1 -p 22,80,443,8000-9000
+./target/release/SASA -H 192.168.1.1 -p 22,80,443,8000-9000
 ```
 
 ### Profile Examples
 
 ```bash
 # Aggressive — maximum speed, use on your own infrastructure only
-./target/release/sc4n -H 10.0.0.1 -p 1-65535 -P aggressive
+./target/release/SASA -H 10.0.0.1 -p 1-65535 -P aggressive
 
 # Balanced — default profile, good for authorized assessments
-./target/release/sc4n -H target.example.com -p 1-1024 -P balanced
+./target/release/SASA -H target.example.com -p 1-1024 -P balanced
 
 # Stealth — low and slow, designed to avoid IDS detection
-./target/release/sc4n -H target.example.com -p 1-1024 -P stealth
+./target/release/SASA -H target.example.com -p 1-1024 -P stealth
 
 # Paranoid — one probe at a time with random long delays, maximum stealth
-./target/release/sc4n -H target.example.com -p 22,80,443 -P paranoid
+./target/release/SASA -H target.example.com -p 22,80,443 -P paranoid
 ```
 
 ### Override Profile Settings
 
 ```bash
 # Use stealth profile but override concurrency and rate
-./target/release/sc4n -H target.example.com -p 1-1024 -P stealth -c 50 -r 100
+./target/release/SASA -H target.example.com -p 1-1024 -P stealth -c 50 -r 100
 
 # Custom timeout per probe (milliseconds)
-./target/release/sc4n -H target.example.com -p 1-1024 -t 3000
+./target/release/SASA -H target.example.com -p 1-1024 -t 3000
 
 # Disable port randomization
-./target/release/sc4n -H target.example.com -p 1-1024 --no-randomize
+./target/release/SASA -H target.example.com -p 1-1024 --no-randomize
 
 # Quiet mode — suppress banner, print results only
-./target/release/sc4n -H target.example.com -p 1-1024 -q
+./target/release/SASA -H target.example.com -p 1-1024 -q
 
 # Debug mode — show all ports including closed
-./target/release/sc4n -H target.example.com -p 22,80,443 -d
+./target/release/SASA -H target.example.com -p 22,80,443 -d
 
 # Custom output file
-./target/release/sc4n -H target.example.com -p 1-1024 -o results.jsonl
+./target/release/SASA -H target.example.com -p 1-1024 -o results.jsonl
 ```
 
 ## Flag Reference
@@ -80,7 +80,7 @@ cargo build --release
 | `-P` | `--profile` | Scan profile: `aggressive`, `balanced`, `stealth`, `paranoid` | `balanced` |
 | `-c` | `--concurrency` | Number of concurrent probes (overrides profile) | *(profile default)* |
 | `-r` | `--rate` | Requests per second limit, 0 = unlimited (overrides profile) | *(profile default)* |
-| `-o` | `--output` | Output file path | `sc4n_results.jsonl` |
+| `-o` | `--output` | Output file path | `SASA_results.jsonl` |
 | `-t` | `--timeout-ms` | Timeout per probe in milliseconds (overrides profile) | *(profile default)* |
 | `-d` | `--debug` | Show all ports including closed | `false` |
 | | `--randomize` | Randomize port scan order | `true` |
